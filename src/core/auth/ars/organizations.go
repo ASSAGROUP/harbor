@@ -159,9 +159,11 @@ func checkOrgs(orgArray []interface{}) (orgs map[string]Org, haveAccess bool) {
 
 	re := regexp.MustCompile("^(http|https)://") //https://golang.org/pkg/regexp/#MustCompile
 	thisEnvAdminURL := os.Getenv("ADMIN_URL")
+	thisEnv2ndAdminURL := os.Getenv("APPC_ADMIN_URL")
 	thisEnvHost := re.ReplaceAllString(thisEnvAdminURL, "")
+	thisEnv2ndHost := re.ReplaceAllString(thisEnv2ndAdminURL, "")
 
-	log.Debugf("check if user's organizations have access to this domain: %s", thisEnvHost)
+	log.Debugf("check if user's organizations have access to this domain: %s and %s", thisEnvHost, thisEnv2ndHost)
 
 	orgs = map[string]Org{} //organizations which can access this domain (deployment)
 	userOrgIds := []string{}
@@ -208,7 +210,7 @@ func checkOrgs(orgArray []interface{}) (orgs map[string]Org, haveAccess bool) {
 					re := regexp.MustCompile("^(http|https)://")
 					adminHost := re.ReplaceAllString(adminHost, "")
 					log.Debugf("org %s(%s) have access to %s", orgToSave.Name, orgToSave.ID, adminHost)
-					if adminHost == thisEnvHost {
+					if adminHost == thisEnvHost || adminHost == thisEnv2ndHost {
 						orgs[orgToSave.ID] = orgToSave
 						break
 					}
