@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,11 +29,13 @@ const (
 	envVarUserOrgsCacheDuration = "USER_ORGS_CACHE_DURATION"
 	envVarUserSessionDuration   = "USER_SESSION_DURATION"
 	userTypeDOSA                = "DOSA"
+	serviceAccountPrefix        = "service-account-"
 )
 
 var (
-	orgsCacheDur   time.Duration
-	userSessionDur time.Duration
+	orgsCacheDur               time.Duration
+	userSessionDur             time.Duration
+	serviceAccountEmailPattern = regexp.MustCompile(`^service-account-(.+?)@placeholder\.org$`)
 )
 
 // Auth implements Authenticator interface to authenticate user against Dashboard.
@@ -66,6 +69,16 @@ func (d *Auth) Authenticate(m models.AuthModel) (*models.User, error) {
 		log.Debugf("username got from token: %s", username)
 		if saType, ok := mapClaims["sa_type"]; ok {
 			if saType == userTypeDOSA {
+				dosa = true
+			}
+		} else if email, ok := mapClaims["email"]; ok {
+			userEmail := email.(string)
+			if serviceAccountEmailPattern.MatchString(userEmail) {
+				dosa = true
+			}
+		} else if preferred_username, ok := mapClaims["preferred_username"]; ok {
+			preferredUsername := preferred_username.(string)
+			if strings.HasPrefix(preferredUsername, serviceAccountPrefix) {
 				dosa = true
 			}
 		}
