@@ -337,8 +337,8 @@ func createUserForDOSA(userInfo map[string]interface{}, passwordHash string) (us
 	user.HasAdminRole = false
 	user.Role = 2
 
-	// use ResetUUID to store last auth time against backend (ARS-4919)
-	user.ResetUUID = time.Now().Format(time.RFC3339)
+	// use ResetUUID to store next time (last auth time + userSessionDur) for auth against backend again (ARS-4919)
+	user.ResetUUID = time.Now().Add(userSessionDur).Format(time.RFC3339)
 
 	return
 }

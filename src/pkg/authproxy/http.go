@@ -1,8 +1,10 @@
 package authproxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/goharbor/harbor/src/common"
 	"github.com/goharbor/harbor/src/common/dao/group"
 	"github.com/goharbor/harbor/src/common/models"
@@ -10,8 +12,6 @@ import (
 	k8s_api_v1beta1 "k8s.io/api/authentication/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 )
 
@@ -23,8 +23,8 @@ func TokenReview(rawToken string, authProxyConfig *models.HTTPAuthProxy) (k8s_ap
 	authClientCfg := &rest.Config{
 		Host: authProxyConfig.TokenReviewEndpoint,
 		ContentConfig: rest.ContentConfig{
-			GroupVersion:         &schema.GroupVersion{},
-			NegotiatedSerializer: serializer.DirectCodecFactory{CodecFactory: scheme.Codecs},
+			GroupVersion: &schema.GroupVersion{},
+			// NegotiatedSerializer: serializer.DirectCodecFactory{CodecFactory: scheme.Codecs},
 		},
 		BearerToken:     rawToken,
 		TLSClientConfig: getTLSConfig(authProxyConfig),
@@ -44,7 +44,7 @@ func TokenReview(rawToken string, authProxyConfig *models.HTTPAuthProxy) (k8s_ap
 			Token: rawToken,
 		},
 	}
-	res := authClient.Post().Body(tokenReviewRequest).Do()
+	res := authClient.Post().Body(tokenReviewRequest).Do(context.Background())
 	err = res.Error()
 	if err != nil {
 		log.Errorf("fail to POST auth request, %v", err)

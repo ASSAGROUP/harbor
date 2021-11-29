@@ -138,7 +138,7 @@ GOINSTALL=$(GOCMD) install
 GOTEST=$(GOCMD) test
 GODEP=$(GOTEST) -i
 GOFMT=gofmt -w
-GOBUILDIMAGE=golang:1.12.12
+GOBUILDIMAGE=golang:1.16.10
 GOBUILDPATH=/harbor
 
 # go build

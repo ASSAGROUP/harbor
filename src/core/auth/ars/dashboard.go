@@ -29,6 +29,7 @@ const (
 	envVarUserOrgsCacheDuration = "USER_ORGS_CACHE_DURATION"
 	envVarUserSessionDuration   = "USER_SESSION_DURATION"
 	userTypeDOSA                = "DOSA"
+	UserTypeIAMUser             = "IAMUSER"
 	serviceAccountPrefix        = "service-account-"
 )
 
@@ -47,11 +48,14 @@ type Auth struct {
 func (d *Auth) Authenticate(m models.AuthModel) (*models.User, error) {
 
 	username := m.Principal
-	useToken := false
-	dosa := false // for DOSA service account
-	authAgainstBackend := func(useToken bool, dosa bool) (*models.User, error) {
+	useToken := false // access token from AxwayID; AWS IAM token
+	userType := ""    // DOSA, IAMUSER
+	authAgainstBackend := func(useToken bool, userType string) (*models.User, error) {
 		if useToken {
-			if dosa {
+			if userType == UserTypeIAMUser {
+				return authenticateByAwsIamToken(m)
+			}
+			if userType == userTypeDOSA {
 				return authenticateByDOSAToken(m)
 			}
 			return authenticateByToken(m)
@@ -69,19 +73,24 @@ func (d *Auth) Authenticate(m models.AuthModel) (*models.User, error) {
 		log.Debugf("username got from token: %s", username)
 		if saType, ok := mapClaims["sa_type"]; ok {
 			if saType == userTypeDOSA {
-				dosa = true
+				userType = userTypeDOSA
 			}
 		} else if email, ok := mapClaims["email"]; ok {
 			userEmail := email.(string)
 			if serviceAccountEmailPattern.MatchString(userEmail) {
-				dosa = true
+				userType = userTypeDOSA
 			}
 		} else if preferred_username, ok := mapClaims["preferred_username"]; ok {
 			preferredUsername := preferred_username.(string)
 			if strings.HasPrefix(preferredUsername, serviceAccountPrefix) {
-				dosa = true
+				userType = userTypeDOSA
 			}
 		}
+	} else if strings.HasPrefix(m.Password, V1Prefix) {
+		// check if the password is an AWS IAM token
+		log.Debug("authenticate with AWS IAM token...")
+		useToken = true
+		userType = UserTypeIAMUser
 	} else {
 		log.Debug("Password is provided, authenticating with password...")
 	}
@@ -96,24 +105,30 @@ func (d *Auth) Authenticate(m models.AuthModel) (*models.User, error) {
 	}
 	if existing == nil {
 		log.Debugf("no user exists for %s", username)
-		return authAgainstBackend(useToken, dosa)
+		return authAgainstBackend(useToken, userType)
+	} else {
+		log.Debugf("got user %v", existing)
 	}
 
-	log.Debugf("existing user ResetUUID (last auth time against backend): %s", existing.ResetUUID) // time last auth happened
+	log.Debugf("existing user ResetUUID (time to auth against backend again): %s", existing.ResetUUID) // time last auth happened + TTL
 
 	if existing.Password != getDigest(m.Password) {
 		log.Errorf("got different password")
-		return authAgainstBackend(useToken, dosa)
+		return authAgainstBackend(useToken, userType)
 	}
 
 	authTime, err := time.Parse(time.RFC3339, existing.ResetUUID)
 	if err != nil {
 		log.Errorf("error parsing ResetUUID as time. %v", err)
-		return authAgainstBackend(useToken, dosa)
+		return authAgainstBackend(useToken, userType)
 	}
-	if time.Now().After(authTime.Add(userSessionDur)) {
-		log.Debugf("last auth time against backend is earlier than %s", userSessionDur)
-		return authAgainstBackend(useToken, dosa)
+	if time.Now().After(authTime) {
+		if userType == UserTypeIAMUser {
+			log.Debug("IAM token expired")
+		} else {
+			log.Debugf("last auth time against backend is earlier than %s", userSessionDur)
+		}
+		return authAgainstBackend(useToken, userType)
 	}
 
 	return existing, nil
@@ -281,6 +296,7 @@ func createUserObject(userData *gabs.Container, sid string, passwordHash string)
 
 	// use Realname field to save dashboard session and Salt for the realname.
 	// No other unused fields (including Salt) are long enough for sid.
+	// Dashboard session is used for retrieving user organization info in PostAuthenticate.
 	mUser := &models.User{
 		Username: userData.Path("result.username").Data().(string),
 		Password: passwordHash,
@@ -323,8 +339,8 @@ func createUserObject(userData *gabs.Container, sid string, passwordHash string)
 	mUser.Role = 2
 	// }
 
-	// use ResetUUID to store last auth time against backend (ARS-4919)
-	mUser.ResetUUID = time.Now().Format(time.RFC3339)
+	// use ResetUUID to store next time (last auth time + userSessionDur) for auth against backend again (ARS-4919)
+	mUser.ResetUUID = time.Now().Add(userSessionDur).Format(time.RFC3339)
 	return mUser
 }
 
@@ -386,17 +402,18 @@ func (d *Auth) PostAuthenticate(user *models.User) error {
 			return err
 		}
 
-		log.Debugf("cachedUserOrg.UpdateTime: %v", cachedUserOrg.UpdateTime)
-
 		if cachedUserOrg == nil {
 			log.Warningf("No cached organization info found for user %s", user.Username)
 			refreshOrgs = true
 		} else {
-			if time.Now().After(cachedUserOrg.UpdateTime.Add(orgsCacheDur)) {
-				log.Debugf("The cached organization info is older than %s for user %s. need to refresh", orgsCacheDur, user.Username)
-				refreshOrgs = true
-			} else {
-				log.Debugf("The cached organization info is not older than %s for user %s. no need to refresh", orgsCacheDur, user.Username)
+			log.Debugf("cachedUserOrg.UpdateTime: %v", cachedUserOrg.UpdateTime)
+			if user.Comment != UserTypeIAMUser {
+				if time.Now().After(cachedUserOrg.UpdateTime.Add(orgsCacheDur)) {
+					log.Debugf("The cached organization info is older than %s for user %s. need to refresh", orgsCacheDur, user.Username)
+					refreshOrgs = true
+				} else {
+					log.Debugf("The cached organization info is not older than %s for user %s. no need to refresh", orgsCacheDur, user.Username)
+				}
 			}
 		}
 	}
@@ -428,6 +445,20 @@ func (d *Auth) PostAuthenticate(user *models.User) error {
 			ARSAdmin: true,
 		}
 		freshOrgs[orgToSave.ID] = orgToSave
+
+	} else if user.Comment == UserTypeIAMUser {
+		log.Debugf("compose organization data for IAM user %s", user.Username)
+		haveAccess = true
+		freshOrgs = map[string]Org{}
+
+		orgToSave := Org{
+			ID:       user.Salt,     // eks-admin
+			Name:     user.Realname, // arn:aws:iam::654814900965:role/eks-admin
+			Admin:    false,
+			ARSAdmin: true,
+		}
+		freshOrgs[orgToSave.ID] = orgToSave
+
 	} else {
 		haveAccess, freshOrgs, err = getAndVerifyOrgInfoFrom360(user.Username, dashboardSid)
 		if err != nil {
